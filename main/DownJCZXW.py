@@ -1,75 +1,85 @@
-from urllib import request
+from urllib import request, parse
 import json
-import random
 import math
 import os
-import main.ThunderDownload
+import sys
+from main import ThunderDownload
+
+curPath = os.path.abspath(os.path.dirname(__file__))
+rootPath = os.path.split(curPath)[0]
+sys.path.append(rootPath)
 
 # https://github.com/1183468065
+# 巨潮资讯网
+# 1、根据stock查询orgId
+# 2、查询列表 递归翻页下载
+# 3、完事
 # 下载地址
-base_url = "http://disc.static.szse.cn/download"
+
+down_url = "http://static.cninfo.com.cn/"
 # 接口地址
-interface_url = "http://www.szse.cn/api/disc/announcement/annList"
-# 随机数位数
-random_len = 16
+interface_url = "http://www.cninfo.com.cn/new/hisAnnouncement/query"
+orgId_url = "http://www.cninfo.com.cn/new/information/topSearch/query"
 # 默认page_size
-default_page_size = 30
+default_page_size = 30  # 巨潮资讯网没有地方修改此字段，最好不要该
 # 文件默认路径
-defaule_file_path = 'PDF/'
-# 公司代码共六位，补全代码用
+defaule_file_path = 'JCZXW_PDF/'
+# 公司代码共六位，补全stock用
 len_correct = 6
 # 某些资源不好的尝试调用迅雷下载，但是大批量下载的时候会丢失下载任务
 use_thunder = False
 # 文件名中过滤掉不需要下载的文件
-exclude_file_arr = ['2008', '2013']
-
-
-def get_random_str(length):
-    i = 0
-    random_no = ''
-    while i < length:
-        random_no = random_no + str(random.randint(0, 9))
-        i += 1
-
-    return random_no
+exclude_file_arr = ['摘要']
 
 
 def retrieveback(file_name, save_path):
     print(file_name + "下载完成," + save_path)
 
 
-def get_annList(stock_arr, se_date, pageNum=1, pageSize=default_page_size):
+def get_orgId(keyWord, maxNum=10):
     requestParam = {
-        'channelCode': ['listedNotice_disc'],  # 不清楚这个参数是什么，应该是固定的
+        'keyWord': keyWord,  # 根据需要修改
+        'maxNum': maxNum,  # 好像默认就是10
+    }
+    req_data = bytes(parse.urlencode(requestParam, encoding='utf-8'), encoding='utf-8')
+    req = request.Request(orgId_url, data=req_data, method="POST")
+    res = request.urlopen(req)
+    response = json.loads(res.read().decode('utf-8'))
+    # 这是一个list，只拿出第一个就可以了
+    if len(response) != 0:
+        return response[0]['orgId']
+    else:
+        return None
+
+
+def get_annList(stock, se_date, pageNum=1, pageSize=default_page_size):
+    org_id = get_orgId(stock)
+    requestParam = {
         'pageNum': pageNum,  # 根据需要修改
         'pageSize': pageSize,  # 根据需要修改
         'seDate': se_date,  # 起止时间，格式yyyy-MM-dd
-        'stock': stock_arr,  # 代码/简称/拼音/标题关键字
-        # 'bigIndustryCode': '',  # 行业编号A、B、C、D、E，各行业有不同的字母，如果必须话需要自己去网站上寻找，我这里就不一一展示了
-        # 'plateCode': '',  # 板块，主板11，中小板12，创业板16
-        'bigCategoryId': ['010301']  # 公告类别，不同的公告类别有不同的标号，我这里需要年度报告，根据不同的需要去修改
+        'stock': stock + ',' + org_id,  # 代码,org_id
+        'tabName': 'fulltext',  # 应该是根据不同的tblname查询不同的模块，这里固定
+        'category': 'category_ndbg_szsh',  # 这啥玩意，不同类型？
+        'column': 'szse'  # ？
     }
-    data = bytes(json.dumps(requestParam), encoding='utf-8')
-    # random参数可能是验证，这里我们每次请求都生成一个随机数
-    randomNo = get_random_str(random_len)
+    data = bytes(parse.urlencode(requestParam, encoding='utf-8'), encoding='utf-8')
     header = {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': 'Mozilla/5.0 (Windows NT 6.1; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
-                      'Chrome/74.0.3729.169 Safari/537.36',
-        'Accept': 'application/json, text/javascript, */*; q=0.01',
-        'Accept-Language': 'zh-CN,zh;q=0.9',
+                      'Chrome/74.0.3729.169 Safari/537.36'
     }
-    req = request.Request(interface_url + '?random=0.' + randomNo, data=data,
+    req = request.Request(interface_url, data=data,
                           headers=header,
                           method='POST')
     res = request.urlopen(req)
     response = json.loads(res.read().decode('utf-8'))
-    ann_list = response['data']
+    ann_list = response['announcements']
     if len(ann_list) == 0:
         print('未查询到任何信息')
         return
-    # 总计数，用来翻页
-    total_count = response['announceCount']
+    # 总计数，用来翻页，没找到字段，自己算吧
+    total_count = response['totalAnnouncement']
     if total_count == 0:
         print('未查询到任何信息')
         return
@@ -79,14 +89,14 @@ def get_annList(stock_arr, se_date, pageNum=1, pageSize=default_page_size):
     print("pageNo = " + str(pageNum))
     # 递归翻页
     if total_page != pageNum:
-        get_annList(stock_arr, se_date, pageNum + 1, pageSize)
+        get_annList(stock, se_date, pageNum + 1, pageSize)
     download_from_annList(ann_list)
 
 
 def download_from_annList(ann_list):
     for model in ann_list:
-        downUrl = base_url + model['attachPath']
-        fileName = model['secCode'][0] + model['title'] + '.pdf'
+        downUrl = down_url + model['adjunctUrl']
+        fileName = model['secCode'] + model['secName'] + model['announcementTitle'] + '.pdf'
         fileName = check_filename(fileName)
         savePath = defaule_file_path + fileName
         need_down = check_file_need_down(fileName)
@@ -98,7 +108,7 @@ def download_from_annList(ann_list):
             print(savePath + '已存在')
             continue
         if use_thunder:
-            main.ThunderDownload.thunder_download(downUrl, fileName)
+            ThunderDownload.thunder_download(downUrl, fileName)
         else:
             download_pdf(downUrl, savePath, fileName)
 
@@ -166,7 +176,7 @@ def read_file_as_stock(filename):
 if __name__ == '__main__':
     print('选择类型：A（输入公司代码，下载不同时间内的该公司pdf），B（根据一个txt文件读取公司代码，下载不同时间内该公司pdf，txt格式参考readme）')
     type = input()
-    print('是否使用迅雷下载(y/n)')
+    print('是否使用迅雷下载(y/n)(某些资源不好的尝试调用迅雷下载，但是大批量下载的时候可能会丢失下载任务)')
     use_thunder = True if input() == 'y' else False
     if type.upper() == 'A':
         print('输入公司代码')
@@ -189,10 +199,12 @@ if __name__ == '__main__':
             print('输入查询截止时间，时间格式xxxx-xx-xx')
             dataAnd = input()
             # dataAnd = '2013-12-31'
-            seDate = [dataBetween, dataAnd]
+            seDate = dataBetween + "~" + dataAnd
             print('公司代码：')
             print(stock_arr)
-            get_annList(stock_arr, seDate)
+            for stock in stock_arr:
+                get_annList(stock, seDate)
+
         except Exception as e:
             print(e)
             exit()
